@@ -2,10 +2,29 @@ import Foundation
 import AudioToolbox
 import Capacitor
 
+class dataForm {
+    let type:String;
+    let name:String;
+    let value:String;
+    
+    init(name:String,type:String, value:String){
+        self.name = name;
+
+        self.type = type;
+        self.value = value;
+    }
+}
+
+
+
+
+
+
 @objc(CAPHttpPlugin)
 public class CAPHttpPlugin: CAPPlugin {
 
   @objc public func request(_ call: CAPPluginCall) {
+    print("Testasan","---------------------")
     guard let urlValue = call.getString("url") else {
       return call.reject("Must provide a URL")
     }
@@ -14,7 +33,8 @@ public class CAPHttpPlugin: CAPPlugin {
     }
     
     let headers = (call.getObject("headers") ?? [:]) as [String:String]
-    
+    print("Testasan",headers)
+
     let params = (call.getObject("params") ?? [:]) as [String:String]
     
     guard var url = URL(string: urlValue) else {
@@ -238,7 +258,7 @@ public class CAPHttpPlugin: CAPPlugin {
     
     request.httpMethod = method
     
-    setRequestHeaders(&request, headers)
+    setRequestHeaders(&request, headers,"")
 
     let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
       if error != nil {
@@ -265,29 +285,108 @@ public class CAPHttpPlugin: CAPPlugin {
     url = cmps!.url!
   }
   
-  func setRequestHeaders(_ request: inout URLRequest, _ headers: [String:String]) {
+  func setRequestHeaders(_ request: inout URLRequest, _ headers: [String:String], _ boundary: String) {
     headers.keys.forEach { (key) in
-      guard let value = headers[key] else {
-        return
-      }
+        let value: String
+        if key.lowercased().contains("multipart/form-data") {
+         value = headers[key]! + "; WebKitFormBoundary=----" + boundary
+        }else{
+            value = headers[key]!
+        }
+        
+     
       request.addValue(value, forHTTPHeaderField: key)
     }
   }
   
   // Handle mutation operations: DELETE, PATCH, POST, and PUT
   func mutate(_ call: CAPPluginCall, _ url: URL, _ method: String, _ headers: [String:String]) {
-    let data = call.getObject("data")
+    let dataObject = call.getObject("data")
+    let dataArray  = call.getArray("dataForm",dataForm.self);
+
     
     var request = URLRequest(url: url)
     request.httpMethod = method
-  
-    setRequestHeaders(&request, headers)
+    
+    let boundary = "Boundary-" + randomString(length: 16)
+
+    
+    setRequestHeaders(&request, headers, boundary)
     
     let contentType = getRequestHeader(headers, "Content-Type") as? String
     
-    if data != nil && contentType != nil {
+    if (dataObject != nil || dataArray != nil )  && contentType != nil {
       do {
-        request.httpBody = try getRequestData(request, data!, contentType!)
+        
+        if contentType!.contains("multipart/form-data"){
+            
+            var dataMultiPart = Data()
+            let lineBreak = "\r\n"
+        
+            dataObject?.keys.forEach { (key) in
+                let fileArray:[Any] = dataObject?[key] as! [Any]
+                fileArray.forEach { (fileKey) in
+                    let temp = fileKey as? Dictionary<String, Any>
+                    let type  = temp?["type"] as! String
+                    let value  = temp?["value"] as! String
+                    let name  = temp?["name"] as! String
+                    
+                
+
+                    if(type.contains("description") == true){
+                        
+                        dataMultiPart.append("--\(boundary + lineBreak)")
+                        dataMultiPart.append("Content-Disposition: form-data; name=\"description\"\(lineBreak + lineBreak)")
+                        dataMultiPart.append("\(value + lineBreak)")
+                   
+                    
+                    }else{
+                        let mimeType  = temp?["mimeType"] as! String
+                    
+                        
+                        let imageData = Data (base64Encoded: value)
+                        
+                       // let mimeType = FilesystemUtils.mimeTypeForPath(path: name)
+
+                        dataMultiPart.append("--\(boundary + lineBreak)")
+                        dataMultiPart.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(name)\"\(lineBreak)")
+                        dataMultiPart.append("Content-Type: \(mimeType + lineBreak + lineBreak)")
+                      //  dataMultiPart.append(imageData! )
+                        dataMultiPart.append(lineBreak)
+                    }
+                }
+            }
+            dataMultiPart.append("--\(boundary)--\(lineBreak)")
+            
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            let tempMultiPart = String(String(decoding: dataMultiPart, as: UTF8.self))
+            let tempCount = dataMultiPart.count
+            request.setValue(String(tempCount), forHTTPHeaderField: "content-length")
+            request.httpBody = dataMultiPart
+            
+            let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+                print(response);
+              if error != nil {
+                CAPLog.print("Error on upload file", data, response, error)
+                call.reject("Error", "UPLOAD", error, [:])
+                return
+              }
+                
+                
+                let res = response as! HTTPURLResponse
+               
+                call.resolve(self.buildResponse(data, res))
+            }
+            
+            task.resume()
+            
+            return;
+        
+        }else{
+            request.httpBody = try getRequestData(request, dataObject!, contentType!,boundary)
+        }
+        
+        
       } catch let e {
         call.reject("Unable to set request data", "MUTATE", e)
         return
@@ -340,13 +439,11 @@ public class CAPHttpPlugin: CAPPlugin {
     return normalizedHeaders[header.lowercased()]
   }
   
-  func getRequestData(_ request: URLRequest, _ data: [String:Any], _ contentType: String) throws -> Data? {
+    func getRequestData(_ request: URLRequest, _ data: [String:Any], _ contentType: String, _ boundary: String) throws -> Data? {
     if contentType.contains("application/json") {
       return try setRequestDataJson(request, data)
     } else if contentType.contains("application/x-www-form-urlencoded") {
-      return setRequestDataFormUrlEncoded(request, data)
-    } else if contentType.contains("multipart/form-data") {
-      return setRequestDataMultipartFormData(request, data)
+        return setRequestDataFormUrlEncoded(request, data)
     }
     return nil
   }
@@ -372,8 +469,50 @@ public class CAPHttpPlugin: CAPPlugin {
     return nil
   }
   
-  func setRequestDataMultipartFormData(_ request: URLRequest, _ data: [String:Any]) -> Data? {
-    return nil
+    func setRequestDataMultipartFormData(_ request: URLRequest, _ data: Dictionary<String, Any> , _ boundary: String) -> Data? {
+        
+        
+        if let users = data as? [[String : Any]] {
+            for user in users {
+                print(user["id"])
+            }
+        }
+        
+        
+
+     var dataMultiPart = Data()
+        dataMultiPart.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
+
+        /*
+        for temp  in data  {
+            
+            
+            guard let addresses = temp["value"] as? [[String: Any]] else {
+         
+                return nil
+            }
+            
+            
+            let file = temp["value"]
+        let mimeType = FilesystemUtils.mimeTypeForPath(path: file.name)
+            
+        if(file.type.contains("description") == true){
+            let myData:String = file.value
+            dataMultiPart.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
+            dataMultiPart.append("Content-Disposition: form-data; name=\"\(file.name)\"\r\n".data(using: .utf8)!)
+            dataMultiPart.append(myData.data(using: .utf8)!)
+            dataMultiPart.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        }else{
+            let myData:String = file.value
+            dataMultiPart.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
+            dataMultiPart.append("Content-Disposition: form-data; name=\"\(file.name)\"; filename=\"\(file.name)\"\r\n".data(using: .utf8)!)
+            dataMultiPart.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+            dataMultiPart.append(file.value.data(using: .utf8)!)
+            dataMultiPart.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        }
+    }*/
+
+    return dataMultiPart
   }
   
   
@@ -393,4 +532,45 @@ public class CAPHttpPlugin: CAPPlugin {
     
     return data
   }
+    
+    func randomString(length: Int) -> String {
+      let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+      return String((0..<length).map{ _ in letters.randomElement()! })
+    }
+    
+ 
+}
+extension Data {
+   mutating func append(_ string: String) {
+        if let data = string.data(using: .utf8){
+            append(data)
+        }
+    }
+}
+
+extension Data {
+
+    init?(base64String: String) {
+        self.init(base64Encoded: base64String)
+    }
+
+    var base64String: String {
+        return self.base64EncodedString()
+    }
+
+}
+
+extension String {
+
+    init?(base64String: String) {
+        guard let data = Data(base64String: base64String) else {
+            return nil
+        }
+        self.init(data: data, encoding: .utf8)
+    }
+
+    var base64String: String {
+        return self.data(using: .utf8)!.base64String
+    }
+
 }

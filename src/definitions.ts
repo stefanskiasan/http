@@ -18,11 +18,19 @@ export interface HttpPlugin {
   ): Promise<HttpDownloadFileResult>;
 }
 
+export interface formData {
+  type: String;
+  name: String;
+  mimeType?: String;
+  value: String;
+}
+
 export interface HttpOptions {
   url: string;
   method?: string;
   params?: HttpParams;
   data?: any;
+  dataForm?: formData[];
   headers?: HttpHeaders;
   /**
    * How long to wait to read additional data. Resets each time new
